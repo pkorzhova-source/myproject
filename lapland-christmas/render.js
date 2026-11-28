@@ -13,7 +13,7 @@ const mime = { '.html': 'text/html', '.js': 'text/javascript' };
   const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   page.on('console', m => console.log('[page]', m.text()));
-  page.on('pageerror', e => console.log('[err]', e.message));
+  page.on('pageerror', e => { console.log('[err]', e.message); process.exit(1); });
   await page.route('http://scene.local/**', r => {
     const f = path.join(__dirname, new URL(r.request().url()).pathname);
     r.fulfill({ body: fs.readFileSync(f), contentType: mime[path.extname(f)] || 'application/octet-stream' });

@@ -13,8 +13,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 const W = 1920, H = 1080, DUR = 20;
 const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -27,7 +28,7 @@ const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a
 // ---------- renderer ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
 renderer.setPixelRatio(1); renderer.setSize(W, H);
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.9;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -62,7 +63,7 @@ const goldMat = M(0xd8a943, { metalness: 0.85, roughness: 0.3, emissive: 0x3a240
 const ironMat = M(0x1d2028, { metalness: 0.5, roughness: 0.5 });
 const glassDark = M(0x141a2a, { roughness: 0.2 });
 const WARM = [G(2.4, 1.45, 0.6), G(2.1, 1.15, 0.45), G(1.6, 1.05, 0.6), G(2.6, 1.7, 0.85)];
-const pineMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
+const pineMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75 });
 
 function radialTex(stops) {
   const c = document.createElement('canvas'); c.width = c.height = 128;
@@ -86,7 +87,11 @@ const staticRoot = new THREE.Group(); scene.add(staticRoot);
 function mesh(geo, mat, parent, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz); parent.add(m); return m;
 }
-const box = (p, w, h, d, mat, x, y, z, rx, ry, rz) => mesh(new THREE.BoxGeometry(w, h, d), mat, p, x, y, z, rx, ry, rz);
+const box = (p, w, h, d, mat, x, y, z, rx, ry, rz) => {
+  const m0 = Math.min(w, h, d);
+  const geo = m0 > 0.04 ? new RoundedBoxGeometry(w, h, d, m0 > 0.3 ? 3 : 1, Math.min(m0 * 0.32, 0.16)) : new THREE.BoxGeometry(w, h, d);
+  return mesh(geo, mat, p, x, y, z, rx, ry, rz);
+};
 function pool(p, x, z, sx, sz, r, g, b) {
   r *= 0.5; g *= 0.5; b *= 0.5;
   const m = mesh(new THREE.PlaneGeometry(sx, sz), poolMat(r, g, b), p, x, 0.04, z, -Math.PI / 2); return m;
@@ -117,35 +122,31 @@ function scallop(parent, x0, x1, y, z, sag, per, colFn) {
 
 // ---------- pine geometry (vertex coloured, snow dusted) ----------
 const hash3 = (x, y, z) => { const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453; return s - Math.floor(s); };
-function pineGeom(h, r, tiers, snowAmt, dark = 0, segs = 10, jit = 0.28) {
+function pineGeom(h, r, tiers, snowAmt, dark = 0, segs = 18, jit = 0.1) {
   const parts = [];
-  const gA = new THREE.Color(0x14301f), gB = new THREE.Color(0x1f4630), sC = new THREE.Color(0xe9eff8), tr = new THREE.Color(0x3b2717);
-  const trunk = new THREE.CylinderGeometry(h * 0.03, h * 0.04, h * 0.25, 6).toNonIndexed();
+  const gA = new THREE.Color(0x174a30), gB = new THREE.Color(0x2b7048), sC = new THREE.Color(0xf2f6fc), tr = new THREE.Color(0x5a3a22);
+  const trunk = new THREE.CylinderGeometry(h * 0.035, h * 0.045, h * 0.25, 10);
   trunk.translate(0, h * 0.12, 0);
   const tc = []; for (let i = 0; i < trunk.attributes.position.count; i++) tc.push(tr.r, tr.g, tr.b);
   trunk.setAttribute('color', new THREE.Float32BufferAttribute(tc, 3)); parts.push(trunk);
+  const ph = rnd() * 6.28;
   for (let i = 0; i < tiers; i++) {
     const f = i / (tiers - 1);
     const rad = r * (1 - f * 0.78), ch = h * (0.42 - f * 0.12), y = h * 0.16 + f * h * 0.64 + ch / 2;
-    const c = new THREE.ConeGeometry(rad, ch, segs, 2).toNonIndexed();
+    const c = new THREE.ConeGeometry(rad, ch, segs, 6);
     c.translate(0, y, 0);
-    const p = c.attributes.position;
+    const p = c.attributes.position, col = [];
     for (let v = 0; v < p.count; v++) {
       const X = p.getX(v), Y = p.getY(v), Z = p.getZ(v);
-      const k = hash3(Math.round(X * 50) + i * 7, Math.round(Y * 50), Math.round(Z * 50));
-      const rr2 = Math.hypot(X, Z);
-      if (rr2 > 1e-3) { const s = 1 + (k - 0.5) * jit; p.setX(v, X * s); p.setZ(v, Z * s); }
-      p.setY(v, Y + (k - 0.5) * ch * 0.08);
-    }
-    const col = [];
-    for (let t = 0; t < p.count; t += 3) {
-      const cy = (p.getY(t) + p.getY(t + 1) + p.getY(t + 2)) / 3;
-      const local = (cy - (y - ch / 2)) / ch;
-      const isCap = Math.abs(p.getY(t) - p.getY(t + 1)) < 1e-4 && Math.abs(p.getY(t) - p.getY(t + 2)) < 1e-4 && local < 0.1;
-      let c3 = rnd() < 0.5 ? gA : gB;
-      if (!isCap && rnd() < snowAmt * (0.45 + local)) c3 = sC;
-      if (dark) c3 = c3.clone().multiplyScalar(1 - dark);
-      for (let q = 0; q < 3; q++) col.push(c3.r, c3.g, c3.b);
+      const ang = Math.atan2(X, Z), l = (Y - (y - ch / 2)) / ch;
+      const k = 1 + jit * Math.sin(ang * 4 + i * 1.7 + ph) * (1 - l);
+      p.setX(v, X * k); p.setZ(v, Z * k);
+      if (l < 0.02) p.setY(v, Y - ch * 0.06 * (1 + Math.sin(ang * 7 + i)));
+      const thr = 1 - snowAmt + 0.09 * Math.sin(ang * 6 + i * 2.3 + ph);
+      let c3 = gA.clone().lerp(gB, Math.min(1, l * 1.3));
+      if (l > thr && Math.hypot(X, Z) > 1e-4 || (snowAmt > 0.2 && l > 0.97)) c3 = sC;
+      if (dark) c3.multiplyScalar(1 - dark);
+      col.push(c3.r, c3.g, c3.b);
     }
     c.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     c.computeVertexNormals();
@@ -177,7 +178,10 @@ function gableRoof(g, w, d, baseY, a, over, wallMat) {
   for (const s of [-1, 1]) {
     const r = box(g, w + over * 1.6, 0.2, L, roofMat, 0, baseY + rise / 2 - over * Math.tan(a) / 2 + 0.05, s * hs / 2, s * a);
     const nY = Math.cos(a), nZ = s * Math.sin(a);
-    const sn = box(g, w + over * 1.6 + 0.08, 0.22, L + 0.04, snowMat, r.position.x, r.position.y + nY * 0.2, r.position.z + nZ * 0.2, s * a);
+    box(g, w + over * 1.6 + 0.1, 0.44, L + 0.06, snowMat, r.position.x, r.position.y + nY * 0.3, r.position.z + nZ * 0.3, s * a);
+    const ey = r.position.y - (L / 2) * Math.sin(a) + nY * 0.22, ez = r.position.z + s * (L / 2) * Math.cos(a) + nZ * 0.22;
+    mesh(new THREE.CapsuleGeometry(0.2, w + over * 1.6 - 0.3, 4, 10), snowMat, g, 0, ey, ez, 0, 0, Math.PI / 2);
+    for (let k = 0; k < Math.round(w / 1.6); k++) mesh(new THREE.SphereGeometry(1, 10, 8), snowMat, g, rr(-w / 2, w / 2), ey - 0.12, ez + s * 0.05).scale.set(rr(0.16, 0.26), rr(0.22, 0.4), 0.17);
   }
   // attic prism
   const sh = new THREE.Shape(); const ah = (d / 2) * Math.tan(a);
@@ -355,7 +359,7 @@ function textTex(lines, w, h, bg) {
 const TREE_Z = -1.5, TREE_H = 15.5;
 {
   const g = new THREE.Group(); g.position.set(0, 0, TREE_Z); staticRoot.add(g);
-  const tg = mesh(pineGeom(TREE_H, 5.2, 10, 0.0, 0, 28, 0.12), pineMat, g, 0, 0, 0);
+  const tg = mesh(pineGeom(TREE_H, 5.2, 10, 0.08, 0, 32, 0.06), pineMat, g, 0, 0, 0);
   mesh(new THREE.CylinderGeometry(2.3, 2.6, 0.8, 24), woodLight, g, 0, 0.4, 0);
   mesh(new THREE.CylinderGeometry(2.35, 2.35, 0.12, 24), snowMat, g, 0, 0.82, 0);
   const env = y => 5.25 * (1 - (y - 1.2) / (TREE_H - 1.2)) * 0.95 + 0.15;
@@ -515,6 +519,17 @@ for (let i = 0; i < 12; i++) {
   hs.position.set(Math.sin(ang) * R, 0, Math.cos(ang) * R); hs.rotation.y = ang + Math.PI; staticRoot.add(hs);
 }
 
+const shadowTex = radialTex([[0, 'rgba(0,0,0,0.75)'], [0.5, 'rgba(0,0,0,0.35)'], [1, 'rgba(0,0,0,0)']]);
+const shadowMat = new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
+const eyeWhite = M(0xffffff, { roughness: 0.2 }), pupilM = M(0x1a1410, { roughness: 0.1 }), hiM = G(3, 3, 3);
+function cartoonEyes(head, ex, ey, ez, r, irisCol) {
+  for (const sx of [-1, 1]) {
+    const e = mesh(new THREE.SphereGeometry(r, 16, 12), eyeWhite, head, sx * ex, ey, ez); e.scale.set(1, 1.15, 0.6);
+    mesh(new THREE.SphereGeometry(r * 0.62, 14, 10), M(irisCol, { roughness: 0.15 }), head, sx * ex, ey - r * 0.08, ez + r * 0.38).scale.set(1, 1.1, 0.5);
+    mesh(new THREE.SphereGeometry(r * 0.36, 12, 8), pupilM, head, sx * ex, ey - r * 0.08, ez + r * 0.5).scale.set(1, 1.1, 0.5);
+    mesh(new THREE.SphereGeometry(r * 0.16, 8, 6), hiM, head, sx * ex + r * 0.22, ey + r * 0.25, ez + r * 0.62);
+  }
+}
 // ---------- Santa ----------
 const red = new THREE.MeshPhysicalMaterial({ color: 0xb0101c, roughness: 0.6, sheen: 1, sheenColor: new THREE.Color(0xff5a6a), sheenRoughness: 0.45 });
 const fur = M(0xf2f1ee, { roughness: 1, emissive: 0x101014 });
@@ -531,7 +546,7 @@ function limb(parent, a, b, r, m) {
   return c;
 }
 function fluff(r, detail, amp) {
-  const g = new THREE.IcosahedronGeometry(r, detail); const p = g.attributes.position;
+  const ico = new THREE.IcosahedronGeometry(r, detail); ico.deleteAttribute('normal'); ico.deleteAttribute('uv'); const g = mergeVertices(ico); const p = g.attributes.position;
   for (let i = 0; i < p.count; i++) { const v = V3(p.getX(i), p.getY(i), p.getZ(i)); const k = hash3(Math.round(v.x * 40), Math.round(v.y * 40), Math.round(v.z * 40)); v.multiplyScalar(1 + (k - 0.5) * amp); p.setXYZ(i, v.x, v.y, v.z); }
   g.computeVertexNormals(); return g;
 }
@@ -599,28 +614,27 @@ function fluff(r, detail, amp) {
     mesh(new THREE.SphereGeometry(0.05, 8, 6), fur, glove, -0.12, -0.02, 0.02);
   }
   // head
-  const Hd = new THREE.Group(); Hd.position.set(0, 2.42, 0.12); B.add(Hd); santaHead = Hd;
+  const Hd = new THREE.Group(); Hd.position.set(0, 2.42, 0.12); Hd.scale.setScalar(1.22); B.add(Hd); santaHead = Hd;
   mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.25, 12), skin, Hd, 0, 0.0, 0);
   mesh(new THREE.SphereGeometry(0.34, 28, 20), skin, Hd, 0, 0.22, 0);
-  mesh(new THREE.SphereGeometry(0.075, 14, 10), M(0xe8907e, { roughness: 0.5 }), Hd, 0, 0.2, 0.35);
+  mesh(new THREE.SphereGeometry(0.085, 16, 12), M(0xe88a7a, { roughness: 0.4 }), Hd, 0, 0.2, 0.35);
   for (const sx of [-1, 1]) {
     mesh(new THREE.SphereGeometry(0.075, 12, 8), M(0xf0a090, { roughness: 0.7 }), Hd, sx * 0.17, 0.17, 0.27);
-    mesh(new THREE.SphereGeometry(0.032, 10, 8), black, Hd, sx * 0.11, 0.3, 0.3);
-    mesh(new THREE.SphereGeometry(0.01, 6, 4), G(2, 2, 2), Hd, sx * 0.11 + 0.01, 0.31, 0.33);
-    mesh(new THREE.TorusGeometry(0.068, 0.009, 6, 18), goldMat, Hd, sx * 0.11, 0.3, 0.335);
-    mesh(new THREE.CapsuleGeometry(0.025, 0.1, 4, 8), fur, Hd, sx * 0.12, 0.4, 0.3, 0, 0, sx * 1.35);
-    const mu = mesh(fluff(0.1, 2, 0.25), fur, Hd, sx * 0.1, 0.11, 0.33, 0, 0, sx * 0.35); mu.scale.set(1.3, 0.6, 0.7);
-    mesh(fluff(0.15, 2, 0.3), fur, Hd, sx * 0.3, 0.16, -0.05);
+    mesh(new THREE.TorusGeometry(0.083, 0.01, 8, 24), goldMat, Hd, sx * 0.115, 0.3, 0.33);
+    const brow = mesh(fluff(0.07, 3, 0.12), fur, Hd, sx * 0.13, 0.41, 0.29, 0, 0, sx * -0.25); brow.scale.set(1.5, 0.55, 0.7);
+    const mu = mesh(fluff(0.11, 3, 0.08), fur, Hd, sx * 0.1, 0.1, 0.34, 0, 0, sx * 0.4); mu.scale.set(1.35, 0.6, 0.7);
+    mesh(fluff(0.16, 3, 0.1), fur, Hd, sx * 0.3, 0.16, -0.05);
   }
-  box(Hd, 0.1, 0.012, 0.012, goldMat, 0, 0.31, 0.345);
-  const beard = mesh(fluff(0.4, 4, 0.22), fur, Hd, 0, -0.18, 0.15); beard.scale.set(1.0, 1.3, 0.72);
-  mesh(fluff(0.3, 3, 0.25), fur, Hd, 0, -0.5, 0.22).scale.set(0.8, 1.0, 0.6);
-  mesh(fluff(0.36, 3, 0.18), fur, Hd, 0, 0.1, -0.12).scale.set(1.0, 0.9, 0.9);
+  box(Hd, 0.06, 0.012, 0.012, goldMat, 0, 0.31, 0.345);
+  cartoonEyes(Hd, 0.115, 0.3, 0.27, 0.062, 0x3a6ab0);
+  const beard = mesh(fluff(0.4, 4, 0.07), fur, Hd, 0, -0.18, 0.15); beard.scale.set(1.0, 1.3, 0.72);
+  mesh(fluff(0.3, 4, 0.08), fur, Hd, 0, -0.5, 0.22).scale.set(0.8, 1.0, 0.6);
+  mesh(fluff(0.36, 4, 0.06), fur, Hd, 0, 0.1, -0.12).scale.set(1.0, 0.9, 0.9);
   // hat
   const brim = mesh(new THREE.TorusGeometry(0.31, 0.1, 12, 30), fur, Hd, 0, 0.45, 0.0, Math.PI / 2 - 0.15);
   mesh(new THREE.ConeGeometry(0.33, 0.48, 24, 1, true), red, Hd, 0, 0.7, -0.03, -0.15);
   mesh(new THREE.ConeGeometry(0.17, 0.4, 16), red, Hd, 0.17, 0.94, -0.08, 0, 0, -1.1);
-  mesh(fluff(0.12, 2, 0.3), fur, Hd, 0.39, 0.86, -0.08);
+  mesh(fluff(0.12, 3, 0.1), fur, Hd, 0.39, 0.86, -0.08);
   // gift sack
   const sack = mesh(fluff(0.55, 3, 0.15), M(0x7a5232, { roughness: 1 }), S, 1.45, 0.85, 0.3); sack.scale.set(1, 0.95, 0.9);
   for (const [x, y, z, c] of [[1.35, 1.45, 0.3, 0xb01020], [1.6, 1.4, 0.15, 0x1f5a2e], [1.4, 1.42, 0.55, 0xd8a943]]) { box(S, 0.32, 0.32, 0.32, M(c), x, y, z, 0.3, 0.5, 0.2); }
@@ -642,33 +656,39 @@ const skins = [0xf0c8a8, 0xe0b090, 0xc89070, 0x8a5a3a, 0xf5d5c0];
 const people = [];
 function makePerson(scale, holdMug) {
   const g = new THREE.Group(); g.scale.setScalar(scale);
-  const coat = M(pick(coats)), acc = M(pick(accents)), pants = M(pick([0x1a1c22, 0x2a2e3a, 0x3a2a20])), sk = M(pick(skins), { roughness: 0.6 }), boots = M(0x2a1d15);
+  const coat = M(pick(coats), { roughness: 0.7 }), acc = M(pick(accents), { roughness: 0.8 }), pants = M(pick([0x23263a, 0x2a2e4a, 0x4a3426])), sk = M(pick(skins), { roughness: 0.5 }), boots = M(0x3a2618, { roughness: 0.5 });
+  mesh(new THREE.PlaneGeometry(1.1, 1.1), shadowMat, g, 0, 0.03, 0, -Math.PI / 2);
   const legs = [];
   for (const s of [-1, 1]) {
-    const p = new THREE.Group(); p.position.set(s * 0.11, 0.88, 0); g.add(p);
-    mesh(new THREE.CapsuleGeometry(0.085, 0.6, 4, 8), pants, p, 0, -0.4, 0);
-    box(p, 0.16, 0.12, 0.28, boots, 0, -0.82, 0.05);
+    const p = new THREE.Group(); p.position.set(s * 0.13, 0.58, 0); g.add(p);
+    mesh(new THREE.CapsuleGeometry(0.1, 0.3, 4, 10), pants, p, 0, -0.25, 0);
+    const b = mesh(new THREE.SphereGeometry(0.14, 14, 10), boots, p, 0, -0.5, 0.05); b.scale.set(0.9, 0.6, 1.25);
     legs.push(p);
   }
-  mesh(new THREE.CylinderGeometry(0.24, 0.3, 0.45, 12), coat, g, 0, 1.0, 0);
-  mesh(new THREE.CapsuleGeometry(0.24, 0.42, 4, 12), coat, g, 0, 1.36, 0);
-  mesh(new THREE.TorusGeometry(0.13, 0.06, 6, 14), acc, g, 0, 1.68, 0, Math.PI / 2);
-  box(g, 0.1, 0.35, 0.05, acc, 0.08, 1.5, 0.2, 0.2);
-  const head = new THREE.Group(); head.position.y = 1.86; g.add(head);
-  mesh(new THREE.SphereGeometry(0.16, 16, 12), sk, head);
-  const hm = M(pick(accents.concat(coats)));
-  const hatK = rnd();
-  if (hatK < 0.7) { mesh(new THREE.SphereGeometry(0.168, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), hm, head, 0, 0.02, 0); mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.07, 16), acc, head, 0, 0.03, 0); mesh(new THREE.SphereGeometry(0.06, 8, 6), acc, head, 0, 0.19, 0); }
-  else { mesh(new THREE.CylinderGeometry(0.15, 0.17, 0.18, 16), M(0x6a4a3a), head, 0, 0.1, 0); mesh(new THREE.SphereGeometry(0.06, 8, 6), fur, head, 0, 0.21, 0); }
+  const body = mesh(new THREE.SphereGeometry(0.36, 22, 16), coat, g, 0, 0.98, 0); body.scale.set(1, 1.18, 0.88);
+  mesh(new THREE.TorusGeometry(0.31, 0.06, 8, 20), acc, g, 0, 0.62, 0, Math.PI / 2);
+  for (const y of [1.12, 0.95, 0.78]) mesh(new THREE.SphereGeometry(0.035, 8, 6), acc, g, 0, y, 0.32);
+  mesh(new THREE.TorusGeometry(0.17, 0.08, 10, 20), acc, g, 0, 1.36, 0, Math.PI / 2);
+  box(g, 0.13, 0.32, 0.06, acc, 0.12, 1.2, 0.26, 0.25);
+  const head = new THREE.Group(); head.position.y = 1.68; g.add(head);
+  mesh(new THREE.SphereGeometry(0.3, 26, 20), sk, head);
+  cartoonEyes(head, 0.105, 0.03, 0.245, 0.068, pick([0x4a2e18, 0x2a5a8a, 0x3a6a3a, 0x5a3a20]));
+  mesh(new THREE.SphereGeometry(0.055, 12, 8), sk, head, 0, -0.06, 0.3);
+  for (const sx of [-1, 1]) mesh(new THREE.SphereGeometry(0.06, 10, 8), M(0xf08a8a, { roughness: 0.8, transparent: true, opacity: 0.7 }), head, sx * 0.17, -0.07, 0.23).scale.set(1, 0.7, 0.4);
+  mesh(new THREE.TorusGeometry(0.06, 0.014, 6, 14, Math.PI), M(0x6a2a2a), head, 0, -0.12, 0.27, 0, 0, Math.PI);
+  const hm = M(pick(accents.concat(coats)), { roughness: 0.9 });
+  mesh(new THREE.SphereGeometry(0.315, 22, 12, 0, Math.PI * 2, 0, Math.PI / 2), hm, head, 0, 0.06, -0.01).scale.set(1, 1.15, 1);
+  mesh(new THREE.TorusGeometry(0.29, 0.065, 8, 24), acc, head, 0, 0.08, -0.01, Math.PI / 2 - 0.12);
+  mesh(new THREE.SphereGeometry(0.1, 12, 8), acc, head, 0, 0.45, -0.03);
   const arms = [];
   for (const s of [-1, 1]) {
-    const p = new THREE.Group(); p.position.set(s * 0.3, 1.6, 0); g.add(p);
-    mesh(new THREE.CapsuleGeometry(0.07, 0.42, 4, 8), coat, p, 0, -0.27, 0);
-    mesh(new THREE.SphereGeometry(0.07, 8, 6), acc, p, 0, -0.55, 0);
+    const p = new THREE.Group(); p.position.set(s * 0.33, 1.18, 0); g.add(p); p.rotation.z = s * 0.25;
+    mesh(new THREE.CapsuleGeometry(0.075, 0.3, 4, 10), coat, p, 0, -0.2, 0);
+    mesh(new THREE.SphereGeometry(0.085, 12, 8), acc, p, 0, -0.42, 0);
     arms.push(p);
   }
   let mug = null;
-  if (holdMug) { mug = mesh(new THREE.CylinderGeometry(0.06, 0.055, 0.13, 10), M(pick([0xb01020, 0xf2ece0])), arms[1], 0, -0.6, 0.08); }
+  if (holdMug) { mug = mesh(new THREE.CylinderGeometry(0.075, 0.07, 0.15, 14), M(pick([0xc01828, 0xf2ece0]), { roughness: 0.3 }), arms[1], 0, -0.47, 0.1); }
   scene.add(g);
   return { g, legs, arms, head, mug };
 }
@@ -697,7 +717,7 @@ for (const s of stallPos) {
   }
 }
 // kids waiting to see Santa + parent
-for (const [x, z, s] of [[-1.25, SANTA_Z + 2.6, 0.62], [-0.45, SANTA_Z + 3.1, 0.68], [-1.9, SANTA_Z + 3.9, 1.0], [1.6, SANTA_Z + 3.4, 0.98]]) {
+for (const [x, z, s] of [[-1.7, SANTA_Z + 2.2, 0.62], [-1.0, SANTA_Z + 2.5, 0.66], [-2.5, SANTA_Z + 2.9, 1.0], [2.6, SANTA_Z + 2.6, 0.98]]) {
   const p = makePerson(s, false); p.g.position.set(x, 0, z); p.g.rotation.y = Math.PI + rr(-0.3, 0.3);
   people.push({ ...p, kind: 'stand', ph: rnd() * 6, kid: s < 0.8 });
 }
@@ -718,8 +738,8 @@ function updatePeople(t) {
     if (walk) {
       const s = Math.sin(walk);
       p.legs[0].rotation.x = s * 0.45; p.legs[1].rotation.x = -s * 0.45;
-      p.arms[0].rotation.x = -s * 0.35; if (!p.mug) p.arms[1].rotation.x = s * 0.35;
-      p.g.position.y = Math.abs(Math.cos(walk)) * 0.03 * p.g.scale.x;
+      p.arms[0].rotation.x = -s * 0.45; if (!p.mug) p.arms[1].rotation.x = s * 0.45;
+      p.g.position.y = Math.abs(Math.cos(walk)) * 0.05 * p.g.scale.x;
     } else {
       p.head.rotation.y = Math.sin(t * 0.4 + p.ph) * 0.25;
       if (p.kid) { p.arms[1].rotation.z = 2.6 + Math.sin(t * 6 + p.ph) * 0.3; p.g.position.y = Math.max(0, Math.sin(t * 5 + p.ph)) * 0.04; }
@@ -733,7 +753,7 @@ function updatePeople(t) {
 }
 
 // ---------- lights ----------
-scene.add(new THREE.HemisphereLight(0x6078c0, 0x141a36, 0.32));
+scene.add(new THREE.HemisphereLight(0x7a96e8, 0x2a2450, 0.45));
 const moon = new THREE.DirectionalLight(0x9ab0ff, 0.32); moon.position.set(-60, 90, -120); scene.add(moon);
 const pl = (c, i, x, y, z, d = 1.25) => { const l = new THREE.PointLight(c, i, 0, d); l.position.set(x, y, z); scene.add(l); return l; };
 pl(0xffb060, 12, 0, 6, TREE_Z + 5.5, 1.15);
@@ -875,7 +895,7 @@ const tmpT = V3(0, 0, 0);
 const rt = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 });
 const composer = new EffectComposer(renderer, rt);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.7, 0.45, 1.5);
+const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.75, 0.6, 1.5);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 const finalPass = new ShaderPass({
@@ -887,9 +907,9 @@ const finalPass = new ShaderPass({
     vec3 c;
     c.r = texture2D(tDiffuse, uv + d*0.0025).r; c.g = texture2D(tDiffuse, uv).g; c.b = texture2D(tDiffuse, uv - d*0.0025).b;
     float l = dot(c, vec3(.299,.587,.114));
-    c = mix(c*vec3(0.9,0.97,1.1), c, smoothstep(0.0,0.45,l));
+    c = mix(c*vec3(0.86,0.98,1.14), c, smoothstep(0.0,0.45,l));
     c = mix(c, c*vec3(1.07,1.0,0.9), smoothstep(0.45,1.0,l));
-    c = mix(vec3(l), c, 1.12);
+    c = mix(vec3(l), c, 1.25);
     float v = smoothstep(0.95, 0.25, length(d*vec2(1.0,0.8))*1.25);
     c *= mix(0.5, 1.0, v);
     float g = fract(sin(dot(floor(uv*vec2(1920.,1080.)) + floor(uTime*30.)*vec2(17.,31.), vec2(12.9898,78.233)))*43758.5453) - .5;
